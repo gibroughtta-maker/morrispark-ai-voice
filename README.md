@@ -1,158 +1,76 @@
-# Morris Park VoiceChat + Async RAG Demo
+# Morris Park AI Voice Guide
 
-Local demo for a full-duplex Morris Park AI voice guide. The app keeps the main
-experience as realtime voice while running a local async RAG and lead-capture
-sidecar.
+**A real-time, interruptible voice agent that answers enquiries for a commercial property site and captures sales leads.** Visitors talk to it in the browser; it answers from a curated knowledge base, refuses to invent prices or availability, and collects viewing requests one field at a time.
 
-## Run
+Built as a client demo for Morris Park, a business park in Glasgow; the knowledge base uses the site's publicly listed information.
 
-```bash
-cp .env.example .env
-python3 backend/server.py
+<!-- Add a 30–60 second screen recording of a conversation here -->
+
+## What it does
+
+- **Full-duplex voice conversation** — the visitor can interrupt mid-answer; the agent stops speaking and responds to the new question
+- **Grounded answers** — each transcript is matched against a local knowledge base (core facts, availability, FAQ) and the relevant context is injected into the live conversation
+- **Guardrails** — explicit rules stop the agent inventing rent, deposits, lease terms or availability; uncertain questions are handed to the human team
+- **Intent detection** — lightweight rules spot pricing, availability and booking intent and steer the conversation
+- **Lead capture** — when a visitor wants a viewing or a call back, the agent asks for name, contact, space type and preferred time one at a time and stores the lead in SQLite
+- **Embeddable** — runs as a full page or an `<iframe>` widget on any HTTPS site
+
+## Architecture
+
+```mermaid
+flowchart LR
+  B[Browser<br/>mic · 16 kHz PCM in<br/>24 kHz PCM out] <-->|WebSocket| S[Python backend<br/>session · interrupt handling]
+  S <--> A{Voice model adapter}
+  A --> Q[Qwen Omni Realtime<br/>Alibaba Cloud]
+  A --> N[NVIDIA VoiceChat<br/>WebSocket]
+  A --> M[Mock mode<br/>browser STT/TTS, no API cost]
+  S --> K[Knowledge base<br/>RAG + guardrails]
+  S --> L[(SQLite<br/>leads)]
 ```
 
-Open:
+The voice model sits behind a small adapter interface (`start`, `send_audio`, `send_control`, `close`), so the same agent logic runs on Qwen realtime, NVIDIA VoiceChat or a zero-cost mock — the model can be swapped without touching the conversation, RAG or lead-capture code. Retrieval runs as an async sidecar so it never blocks the audio stream.
 
-```text
-http://localhost:5173
-```
-
-The default `VOICECHAT_BACKEND=mock` mode uses browser speech recognition and
-browser speech synthesis so you can test the UI, RAG, interruption behavior, and
-SQLite lead capture without spending API credits.
-
-## Alibaba Cloud / Qwen Realtime Mode
-
-Set these in `.env`:
-
-```text
-VOICECHAT_BACKEND=qwen-realtime
-DASHSCOPE_API_KEY=...
-QWEN_REALTIME_ENDPOINT=wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime
-QWEN_REALTIME_MODEL=qwen3.5-omni-plus-realtime
-QWEN_REALTIME_VOICE=Cherry
-```
-
-Test model access first:
-
-```bash
-python3 backend/test_qwen_realtime.py
-```
-
-Fallback model order:
-
-```text
-qwen3.5-omni-plus-realtime
-qwen3.5-omni-flash-realtime
-qwen3-omni-flash-realtime
-qwen-omni-turbo-realtime
-```
-
-In Qwen mode, the browser sends 16 kHz PCM audio to the backend. The backend
-forwards it to DashScope using `input_audio_buffer.append`, receives
-`response.audio.delta`, and plays 24 kHz PCM audio in the browser.
-
-## NVIDIA VoiceChat Mode
-
-Set these in `.env`:
-
-```text
-VOICECHAT_BACKEND=nvidia-ws
-NVIDIA_API_KEY=...
-NVIDIA_VOICECHAT_WS_URL=wss://...
-NVIDIA_VOICECHAT_FUNCTION_ID=...
-```
-
-If your Early Access endpoint expects a specific session payload, set:
-
-```text
-NVIDIA_VOICECHAT_SESSION_JSON={...}
-```
-
-The backend sends a `session.start` control message with the Morris Park persona
-prompt and forwards browser audio chunks to the NVIDIA WebSocket. JSON messages
-and binary audio from NVIDIA are forwarded back to the browser.
-
-## Project Shape
+## Project structure
 
 ```text
 backend/
-  server.py                 # local HTTP + WebSocket server
+  server.py           # HTTP + WebSocket server, session and interrupt handling
+  cloud_server.py     # FastAPI WebSocket bridge for Railway
   morris/
-    config.py               # .env loading
-    intent.py               # lightweight intent rules
-    knowledge.py            # local RAG + persona prompt
-    lead_store.py           # SQLite lead capture
-    voicechat.py            # mock and NVIDIA WebSocket adapters
-frontend/static/
-  index.html
-  styles.css
-  app.js
-knowledge/
-  core_facts.json
-  availability.json
-  guardrails.json
-  faq.md
-data/
-  leads.sqlite              # created on first run
+    voicechat.py      # model adapters: mock, NVIDIA WebSocket, Qwen realtime
+    knowledge.py      # knowledge base search + persona prompt
+    intent.py         # intent rules (pricing, availability, booking)
+    lead_store.py     # SQLite lead capture
+frontend/static/      # browser client and embeddable widget
+knowledge/            # core facts, availability, guardrails, FAQ
 ```
 
-## Demo Checks
+## Tech stack
 
-- Interrupt while the AI is speaking: browser TTS stops and sends `interrupt`.
-- Ask: `Do you have parking?`
-- Ask: `Where is Morris Park?`
-- Ask: `What spaces are available?`
-- Ask: `How much is it?`
-- Say: `I want to book a viewing`
+Python · asyncio · WebSockets · FastAPI · Qwen Omni Realtime (DashScope) · NVIDIA VoiceChat · SQLite · vanilla JS Web Audio · Vercel (frontend) · Railway (backend)
 
-Remote demos need HTTPS for microphone access. Use Cloudflare Tunnel or ngrok
-and keep the password enabled.
-
-## Embed in a Static HTML Page
-
-Use `frontend/static/embed.html` as a full-page static embed, open
-`/embed.html` after deployment, or copy this iframe into an existing HTTPS page:
-
-```html
-<iframe
-  src="https://morrispark-ai-voice.vercel.app/embed.html"
-  title="Morris Park AI Voice Guide"
-  allow="microphone; autoplay"
-  style="width: 100%; height: 720px; border: 0; border-radius: 16px; overflow: hidden;"
-></iframe>
-```
-
-The parent page must be served over HTTPS for microphone permission to work.
-During the demo, keep the Mac backend and tunnel running:
+## Run locally
 
 ```bash
-caffeinate -dimsu
+cp .env.example .env      # set DEMO_PASSWORD; leave VOICECHAT_BACKEND=mock to start
+pip install -r requirements.txt
 python3 backend/server.py
-npx localtunnel --port 8001 --subdomain morrispark-ai-voice
 ```
 
-## Railway Backend
+Open http://localhost:5173. Mock mode uses browser speech recognition and synthesis, so the UI, retrieval, interruption and lead capture can be tested without API credits.
 
-For an always-on demo, deploy the backend to Railway and point Vercel at the
-Railway WebSocket URL. Railway should use `railway.json`, which starts the
-FastAPI WebSocket bridge on Railway's `$PORT`.
+To use a real voice model, set `VOICECHAT_BACKEND=qwen-realtime` (with `DASHSCOPE_API_KEY` and the `QWEN_REALTIME_*` values) or `VOICECHAT_BACKEND=nvidia-ws` (with the `NVIDIA_*` values) in `.env`. `python3 backend/test_qwen_realtime.py` checks model access first.
 
-Set these Railway variables:
+Remote demos need HTTPS for microphone access. For an always-on demo, deploy the backend to Railway (`railway.json`) and point the Vercel frontend at it with `PUBLIC_WS_URL=wss://<your-railway-domain>/ws`.
 
-```text
-VOICECHAT_BACKEND=qwen-realtime
-DASHSCOPE_API_KEY=...
-QWEN_REALTIME_ENDPOINT=wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime
-QWEN_REALTIME_MODEL=qwen3.5-omni-flash-realtime
-QWEN_REALTIME_VOICE=Tina
-DEMO_PASSWORD=morris
-```
+## Try these
 
-After Railway gives you a public domain, set Vercel production:
+- "Do you have parking?"
+- "What spaces are available?"
+- "How much is it?" — the agent will not make up a price
+- "I want to book a viewing" — starts lead capture
+- Interrupt it while it is speaking
 
-```text
-PUBLIC_WS_URL=wss://your-railway-domain.up.railway.app/ws
-VOICECHAT_BACKEND=qwen-realtime
-QWEN_REALTIME_MODEL=qwen3.5-omni-flash-realtime
-```
+## Author
+
+Designed and built by **Dong Wang**.
